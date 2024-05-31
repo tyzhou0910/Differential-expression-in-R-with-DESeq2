@@ -1,0 +1,108 @@
+---
+title: "Differential expression in R with DESeq2"
+author: "ZHOU,Tianying"
+date: "2024-05-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(ComplexHeatmap)
+library(EnhancedVolcano)
+```
+
+# 1 Data Processing
+
+Data Source：<https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE254077>
+
+Effect of depletion of NR4A3 on vascular calcification [RNA-seq]
+
+| Group | Genotype | Treatment |
+|-------|----------|-----------|
+| CTR   | WT       | none      |
+| KO    | NR4A3KO  | β-GP      |
+
+```{r}
+count <- read.delim("GSE254077_raw_counts_day1.csv", header = TRUE, sep=",")
+count <- count[!duplicated(count[, 1]), ]
+rownames(count) <- count[,1]
+count <- count[,-1]
+count <- count[which(rowSums(count) > 0),]
+head(count)
+```
+
+```{r message=FALSE}
+condition <- factor(c("C","C","C", "S","S","S"))
+coldata <- data.frame(row.names = colnames(count), condition)
+dds <- DESeqDataSetFromMatrix(countData = count, colData = coldata, design = ~condition)
+dds <- DESeq(dds)
+dds
+```
+
+# 2 Visualization
+
+## 2.1 PCA
+
+从图中可以看到，不同条件的样本区分的很明显，而生物学重复之间距离较近。表明生物学重复的一致性和不同分组的差异性较好。
+
+```{r}
+vsdata <- vst(dds, blind=FALSE)
+plotPCA(vsdata, intgroup = "condition")
+```
+
+## 2.2 Dispersion Estimates
+
+可以看到均值和离散之间的反比关系，是我们期望的结果。
+
+```{r}
+plotDispEsts(dds)
+par(font = 2)
+mtext("Dispersion Estimates", side = 3, line = 1.5, adj = 0, cex = 1.2)
+par(font = 1)
+```
+
+## 2.3 Heatmap
+
+选择 $baseMean > 200$ 且 $\log_2 FoldChange > 4$的基因进行绘图。
+
+```{r}
+res <- results(dds, contrast = c("condition", "S", "C"))
+sigs <- na.omit(res)
+sigs <- sigs[sigs$padj < 0.05,]
+
+df <- as.data.frame(sigs)
+df.top <- df[(df$baseMean > 200) & (abs(df$log2FoldChange) > 4),]
+df.top <- df.top[order(df.top$log2FoldChange, decreasing = TRUE),]
+
+rlog_out <- rlog(dds, blind=FALSE) 
+mat <- assay(rlog_out)[rownames(df.top), rownames(coldata)]
+colnames(mat) <- rownames(coldata)
+base_mean <- rowMeans(mat)
+mat.scaled <- t(apply(mat, 1, scale))
+colnames(mat.scaled) <- colnames(mat)
+```
+
+```{r}
+Heatmap(mat.scaled,  
+        # col = brewer.pal(10, "Set3"),
+        cluster_rows = T, cluster_columns = T,
+        # heatmap_height = unit(15, "cm"), 
+        row_names_gp = gpar(fontsize = 5),
+        column_names_gp = gpar(fontsize = 8),
+        row_title_rot = 90,
+        name = "Z-score")
+```
+
+## 2.4 Volcano
+
+由于单细胞自身区别于bulk数据的特异性，大概率会出现很多P值为0或者无限接近于0的基因。
+
+```{r message=FALSE, warning=FALSE}
+EnhancedVolcano(res, x="log2FoldChange", y="padj", lab = rownames(res),
+                pCutoff = 0.05, FCcutoff = 2, axisLabSize = 10, labSize = 3.0)
+```
